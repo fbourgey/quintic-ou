@@ -1,11 +1,13 @@
-# Quintic Ornstein-Uhlenbeck Models
+# Quintic Ornstein-Uhlenbeck (OU) Models
 
-<https://arxiv.org/pdf/2212.10917>
+## Links
 
-<https://colab.research.google.com/drive/14nh9civ_wgQv283eshBWnr146w7Xsbi5?usp=sharing>
+- [arxiv - The quintic Ornstein-Uhlenbeck volatility model that jointly
+calibrates SPX & VIX smiles](https://arxiv.org/pdf/2212.10917)
 
----
+- [Google Colab - Quintic Ornstein-Uhlenbeck Models](https://colab.research.google.com/drive/14nh9civ_wgQv283eshBWnr146w7Xsbi5?usp=sharing)
 
-<https://arxiv.org/pdf/2503.14158>
+- [arxiv - Capturing Smile Dynamics with the Quintic Volatility Model:
+SPX, Skew-Stickiness Ratio and VIX](https://arxiv.org/pdf/2503.14158)
 
-<https://github.com/shaunlinz02/two_factor_quintic_ou>
+- [GitHub Repository - Capturing Smile Dynamics with the Quintic Volatility Model: SPX, Skew-Stickiness Ratio and VIX](https://github.com/shaunlinz02/two_factor_quintic_ou)
