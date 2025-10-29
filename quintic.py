@@ -1,6 +1,7 @@
 import numpy as np
 from scipy import special, interpolate
-from black import black_impvol
+from black import black_impvol, black_otm_impvol_mc
+from utils import gauss_hermite
 
 
 def horner_vector(poly, n, x):
@@ -91,6 +92,150 @@ def doublefactorial(n):
         return 1
     else:
         return n * doublefactorial(n - 2)
+
+
+def std_X(params, t):
+    """
+    Compute standard deviation of X_t in the quintic OU model where
+
+    X_t = eta * int_0^t exp(-kappa * (t-s)) dW_s
+    and eta = eps^(H-0.5), kappa = (0.5 - H)/eps.
+    """
+    H = params["H"]
+    eps = params["eps"]
+    var = (eps ** (2 * H) / (1 - 2 * H)) * (1 - np.exp(-((1 - 2 * H) / eps) * t))
+    return var**0.5
+
+
+def mean_px_squared(a0, a1, a3, a5, sig, n_quad=None):
+    """
+    Compute E[p(X)^2] where p(x) = a0 + a1*x + a3*x^3 + a5*x^5 and X ~ N(0,sig^2).
+
+    Parameters
+    ----------
+    a0, a1, a3, a5 : float
+        Coefficients of the polynomial.
+    sig : float
+        Standard deviation of X.
+    n_quad : int, optional
+        Number of Gauss-Hermite quadrature points. If None, uses analytical formula.
+
+    Returns
+    -------
+    float
+        Expected value of p(X)^2.
+    """
+    if n_quad is not None:
+
+        def quintic_poly(x):
+            return (a0 + a1 * x + a3 * x**3 + a5 * x**5) ** 2
+
+        knots, weights = gauss_hermite(n_quad)
+        return np.sum(weights * quintic_poly(sig * knots))
+
+    return (
+        a0**2
+        + (a1**2 + 2 * a0 * a3) * sig**2
+        + (2 * a1 * a3 + 2 * a0 * a5) * 3 * sig**4
+        + (a3**2 + 2 * a1 * a5) * 15 * sig**6
+        + 2 * a3 * a5 * 105 * sig**8
+        + a5**2 * 945 * sig**10
+    )
+
+
+def cov_delta_X_delta_W(delta, eps, H):
+    r"""
+    Compute the covariance matrix of (delta_X, delta_W) over time increment delta.
+
+    Here, delta_X = eps^{H-1/2} \int_{t}^{t+delta} e^{-((0.5-H)/eps)(t+delta - s)} dW_s
+    and delta_W = W_{t+delta} - W_t.
+
+    Parameters
+    ----------
+    delta : float
+        Time increment.
+    eps : float
+        Epsilon parameter of the model.
+    H : float
+        Hurst parameter of the model.
+
+    Returns
+    -------
+    ndarray
+        2x2 covariance matrix.
+    """
+    var_X = (eps ** (2 * H) / (1 - 2 * H)) * (1 - np.exp(-((1 - 2 * H) / eps) * delta))
+    cov_XW = (eps ** (0.5 + H) / (0.5 - H)) * (1 - np.exp(-((0.5 - H) / eps) * delta))
+    var_W = delta
+    return np.array(
+        [
+            [var_X, cov_XW],
+            [cov_XW, var_W],
+        ]
+    )
+
+
+def simulate_quintic_ou(
+    params, xi0, T, k, n_steps, n_mc, seed=None, return_paths=False
+):
+    """
+    Simulate paths of the quintic OU model.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    dT = T / n_steps
+    rho, H, eps, a_vec = (
+        params["rho"],
+        params["H"],
+        params["eps"],
+        params["a_vec"],
+    )
+    a0, a1, a3, a5 = a_vec
+
+    def quintic_poly(x):
+        return a0 + a1 * x + a3 * x**3 + a5 * x**5
+
+    # initialize arrays
+    X = np.zeros((n_steps + 1, n_mc))
+    # variance process
+    V = np.zeros_like(X)
+    V[0, :] = xi0(0.0)
+    # log-price process
+    log_S = np.zeros_like(X)
+
+    # perform Cholesky decomposition once
+    L = np.linalg.cholesky(cov_delta_X_delta_W(delta=dT, eps=eps, H=H))
+
+    exp_eps = np.exp(-((0.5 - H) / eps) * dT)
+    rho_perp = np.sqrt(1 - rho**2)
+
+    for i in range(n_steps):
+        t_i_1 = (i + 1) * dT
+        dX, dW = L @ np.random.normal(size=(2, n_mc))
+        # update X with OU dynamics
+        X[i + 1, :] = exp_eps * X[i, :] + dX
+        # compute E[p(X)^2]
+        mean_squared = mean_px_squared(
+            a0=a0, a1=a1, a3=a3, a5=a5, sig=std_X(params, t_i_1)
+        )
+        # update volatility V
+        V[i + 1, :] = xi0(t_i_1) * quintic_poly(X[i + 1, :]) ** 2 / mean_squared
+        # update log S with trapezoidal rule for integral in V
+        log_S[i + 1, :] = (
+            log_S[i, :]
+            - 0.5 * (V[i, :] + V[i + 1, :]) * 0.5 * dT
+            + np.sqrt(V[i, :])
+            * (rho * dW + rho_perp * np.sqrt(dT) * np.random.normal(size=n_mc))
+        )
+
+    S = np.exp(log_S)
+
+    if return_paths:
+        return X, V, S
+    else:
+        # return implied volatilities
+        return black_otm_impvol_mc(S=S[-1, :], k=k, T=T, mc_error=True)
 
 
 def mc_polynomial_fwd_var(
