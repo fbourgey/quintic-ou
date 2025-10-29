@@ -94,12 +94,12 @@ def doublefactorial(n):
         return n * doublefactorial(n - 2)
 
 
-def std_X(params, t):
+def std_x_ou_quintic(params, t):
     """
     Compute standard deviation of X_t in the quintic OU model where
 
-    X_t = eta * int_0^t exp(-kappa * (t-s)) dW_s
-    and eta = eps^(H-0.5), kappa = (0.5 - H)/eps.
+    X_t = eps^(H-0.5) * int_0^t exp(-kappa * (t-s)) dW_s
+    and kappa = (0.5 - H)/eps.
     """
     H = params["H"]
     eps = params["eps"]
@@ -205,26 +205,39 @@ def simulate_quintic_ou(
     log_S = np.zeros_like(X)
 
     # perform Cholesky decomposition once
-    L = np.linalg.cholesky(cov_delta_X_delta_W(delta=dT, eps=eps, H=H))
+    # L = np.linalg.cholesky(cov_delta_X_delta_W(delta=dT, eps=eps, H=H))
+
+    cov_mat = cov_delta_X_delta_W(delta=dT, eps=eps, H=H)
+    std_X = cov_mat[0, 0] ** 0.5
+    std_W = cov_mat[1, 1] ** 0.5
+    cov_XW = cov_mat[0, 1]
+    rho_XW = cov_XW / (std_X * std_W)
 
     exp_eps = np.exp(-((0.5 - H) / eps) * dT)
     rho_perp = np.sqrt(1 - rho**2)
 
     for i in range(n_steps):
         t_i_1 = (i + 1) * dT
-        dX, dW = L @ np.random.normal(size=(2, n_mc))
+
+        # dX, dW = L @ np.random.normal(size=(2, n_mc))
+
+        # direct method - no Cholesky
+        normal = np.random.normal(size=(2, n_mc))
+        dX = std_X * normal[0, :]
+        dW = std_W * (rho_XW * normal[0, :] + np.sqrt(1 - rho_XW**2) * normal[1, :])
+
         # update X with OU dynamics
         X[i + 1, :] = exp_eps * X[i, :] + dX
         # compute E[p(X)^2]
         mean_squared = mean_px_squared(
-            a0=a0, a1=a1, a3=a3, a5=a5, sig=std_X(params, t_i_1)
+            a0=a0, a1=a1, a3=a3, a5=a5, sig=std_x_ou_quintic(params, t=t_i_1)
         )
         # update volatility V
         V[i + 1, :] = xi0(t_i_1) * quintic_poly(X[i + 1, :]) ** 2 / mean_squared
         # update log S with trapezoidal rule for integral in V
         log_S[i + 1, :] = (
             log_S[i, :]
-            - 0.5 * (V[i, :] + V[i + 1, :]) * 0.5 * dT
+            - 0.5 * V[i, :] * dT
             + np.sqrt(V[i, :])
             * (rho * dW + rho_perp * np.sqrt(dT) * np.random.normal(size=n_mc))
         )
