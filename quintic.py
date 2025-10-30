@@ -53,7 +53,7 @@ def bs_price_call(s, sigma, T, K):
     return s * special.ndtr(d1) - K * special.ndtr(d2)
 
 
-def gen_bm_path(n_steps, N_sims):
+def gen_bm_path(n_steps, N_sims, seed=None):
     """
     Generate Brownian motion paths with antithetic variates.
 
@@ -69,6 +69,8 @@ def gen_bm_path(n_steps, N_sims):
     ndarray
         Array of shape (n_steps, 2*N_sims) with Brownian increments.
     """
+    if seed is not None:
+        np.random.seed(seed)
     w1 = np.random.normal(0, 1, (n_steps, N_sims))
     w1 = np.concatenate((w1, -w1), axis=1)  # antithetic variates
     return w1
@@ -135,11 +137,11 @@ def mean_px_squared(a0, a1, a3, a5, sig, n_quad=None):
 
     return (
         a0**2
-        + (a1**2 + 2 * a0 * a3) * sig**2
-        + (2 * a1 * a3 + 2 * a0 * a5) * 3 * sig**4
-        + (a3**2 + 2 * a1 * a5) * 15 * sig**6
-        + 2 * a3 * a5 * 105 * sig**8
-        + a5**2 * 945 * sig**10
+        + a1**2 * sig**2
+        + 6 * a1 * a3 * sig**4
+        + (15 * a3**2 + 30 * a1 * a5) * sig**6
+        + 210 * a3 * a5 * sig**8
+        + 945 * a5**2 * sig**10
     )
 
 
@@ -200,7 +202,7 @@ def simulate_quintic_ou(
     X = np.zeros((n_steps + 1, n_mc))
     # variance process
     V = np.zeros_like(X)
-    V[0, :] = xi0(0.0)
+    V[0, :] = xi0(0.0) * (quintic_poly(0.0) ** 2)
     # log-price process
     log_S = np.zeros_like(X)
 
@@ -212,6 +214,7 @@ def simulate_quintic_ou(
     std_W = cov_mat[1, 1] ** 0.5
     cov_XW = cov_mat[0, 1]
     rho_XW = cov_XW / (std_X * std_W)
+    print(rho_XW)
 
     exp_eps = np.exp(-((0.5 - H) / eps) * dT)
     rho_perp = np.sqrt(1 - rho**2)
@@ -237,7 +240,7 @@ def simulate_quintic_ou(
         # update log S with trapezoidal rule for integral in V
         log_S[i + 1, :] = (
             log_S[i, :]
-            - 0.5 * V[i, :] * dT
+            - 0.5 * (V[i, :] + V[i + 1, :]) * 0.5 * dT
             + np.sqrt(V[i, :])
             * (rho * dW + rho_perp * np.sqrt(dT) * np.random.normal(size=n_mc))
         )
@@ -247,7 +250,7 @@ def simulate_quintic_ou(
     if return_paths:
         return X, V, S
     else:
-        # return implied volatilities
+        # implied volatilities
         return black_otm_impvol_mc(S=S[-1, :], k=k, T=T, mc_error=True)
 
 
@@ -263,6 +266,7 @@ def mc_polynomial_fwd_var(
     w1,
     compute_iv=True,
     spine_k_order=3,
+    seed=None,
 ):
     """
     Monte Carlo pricing for the quintic OU model.
@@ -342,7 +346,16 @@ def mc_polynomial_fwd_var(
 
     f_func = horner_vector(a_k[::-1], len(a_k), Xt)
 
-    del Xt
+    dW = np.sqrt(dt) * w1[1:, :]
+    dX = Xt[1:, :] - np.exp(-((0.5 - H) / eps) * dt) * Xt[:-1, :]
+    corr_per_step = []
+    for i in range(dX.shape[0]):
+        xi = dX[i, :]
+        wi = dW[i, :]
+        c = np.corrcoef(xi, wi)[0, 1]
+        corr_per_step.append(c)
+
+    print(corr_per_step)
 
     fv_var_curve_spline_sqrt = interpolate.splrep(
         T_array_nodes, np.sqrt(fv_nodes), k=spine_k_order
@@ -352,8 +365,26 @@ def mc_polynomial_fwd_var(
     ) ** 2
 
     volatility = f_func / np.sqrt(normal_var.reshape(-1, 1))
+    print(np.std(volatility, axis=1))
     del f_func
     volatility = np.sqrt(fv_curve) * volatility
+
+    logS1 = np.log(S0)
+    for i in range(n_steps):
+        logS1 = (
+            logS1
+            - 0.5 * dt * volatility[i] ** 2
+            + np.sqrt(dt)
+            * volatility[i]
+            * (
+                rho * w1[i + 1, :]
+                + np.sqrt(1 - rho**2) * np.random.normal(size=w1.shape[1])
+            )
+        )
+    del w1
+    ST1 = np.exp(logS1)
+
+    return black_otm_impvol_mc(S=ST1, k=np.log(Ks), T=T, mc_error=True)
 
     logS1 = np.log(S0)
     for i in range(w1.shape[0] - 1):
@@ -388,6 +419,7 @@ def mc_polynomial_fwd_var(
     c = np.array(c)
 
     call_mc_cv1 = X - c * (Y - eY)
+    print(X.mean())
     del X
     del Y
     del eY
@@ -399,14 +431,15 @@ def mc_polynomial_fwd_var(
         imp_mc_upper = black_impvol(
             K=Ks,
             T=T,
-            F=S0,
+            # F=S0,
+            F=np.mean(ST1),
             value=p_mc_cv1 + 1.96 * std_mc_cv1 / np.sqrt(2 * n_mc),
             opttype=1,
         )
         imp_mc_lower = black_impvol(
             K=Ks,
             T=T,
-            F=S0,
+            F=np.mean(ST1),
             value=p_mc_cv1 - 1.96 * std_mc_cv1 / np.sqrt(2 * n_mc),
             opttype=1,
         )

@@ -10,6 +10,7 @@ dependencies = [
     "lab>=8.5",
     "numpy>=2.3.3",
     "pandas>=2.3.3",
+    "py-vollib>=1.0.1",
     "scipy>=1.16.2",
     "seaborn>=0.13.2",
     "tqdm>=4.67.1",
