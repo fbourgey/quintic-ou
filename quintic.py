@@ -178,7 +178,7 @@ def cov_delta_X_delta_W(delta, eps, H):
 
 
 def simulate_quintic_ou(
-    params, xi0, T, k, n_steps, n_mc, seed=None, return_paths=False
+    params, xi0, T, k, n_steps, n_mc, seed=None, return_paths=False, antithetic=True
 ):
     """
     Simulate paths of the quintic OU model.
@@ -198,60 +198,67 @@ def simulate_quintic_ou(
     def quintic_poly(x):
         return a0 + a1 * x + a3 * x**3 + a5 * x**5
 
-    # initialize arrays
-    X = np.zeros((n_steps + 1, n_mc))
-    # variance process
-    V = np.zeros_like(X)
-    V[0, :] = xi0(0.0) * (quintic_poly(0.0) ** 2)
-    # log-price process
-    log_S = np.zeros_like(X)
-
-    # perform Cholesky decomposition once
-    # L = np.linalg.cholesky(cov_delta_X_delta_W(delta=dT, eps=eps, H=H))
-
-    cov_mat = cov_delta_X_delta_W(delta=dT, eps=eps, H=H)
-    std_X = cov_mat[0, 0] ** 0.5
-    std_W = cov_mat[1, 1] ** 0.5
-    cov_XW = cov_mat[0, 1]
+    # precompute OU/finite-step covariance pieces
+    std_X = np.sqrt(
+        (eps ** (2 * H) / (1 - 2 * H)) * (1 - np.exp(-((1 - 2 * H) / eps) * dT))
+    )
+    std_W = dT**0.5
+    cov_XW = (
+        rho * (eps ** (0.5 + H) / (0.5 - H)) * (1 - np.exp(-((0.5 - H) / eps) * dT))
+    )
     rho_XW = cov_XW / (std_X * std_W)
-    print(rho_XW)
-
     exp_eps = np.exp(-((0.5 - H) / eps) * dT)
-    rho_perp = np.sqrt(1 - rho**2)
+
+    # antithetic normal generator (time x paths)
+    def antithetic_normals(n_steps, n_mc):
+        base = (n_mc + 1) // 2
+        z = np.random.normal(size=(n_steps, base))
+        z_full = np.concatenate([z, -z], axis=1)[:, :n_mc]
+        return z_full
+
+    if antithetic:
+        # normal drives dX; normal_perp is independent piece to complete dW;
+        # normal_perp is orthogonal
+        normal = antithetic_normals(n_steps, n_mc)
+        normal_perp = antithetic_normals(n_steps, n_mc)
+    else:
+        normal = np.random.normal(size=(n_steps, n_mc))
+        normal_perp = np.random.normal(size=(n_steps, n_mc))
+
+    # state arrays
+    X = np.zeros((n_steps + 1, n_mc))
+    V = np.zeros((n_steps + 1, n_mc))
+    V[0, :] = xi0(0.0)
+    t_grid = np.linspace(0.0, T, n_steps + 1)
+
+    # normalization E[p(X_t)^2]
+    mean_sq = np.empty(n_steps + 1)
+    for i in range(n_steps + 1):
+        sig_ti = std_x_ou_quintic(params, t=t_grid[i])  # = sqrt(Var[X_ti])
+        mean_sq[i] = mean_px_squared(a0=a0, a1=a1, a3=a3, a5=a5, sig=sig_ti)
+
+    # generate increments
+    dX = std_X * normal
+    dW_S = std_W * (rho_XW * normal + np.sqrt(1 - rho_XW**2) * normal_perp)
 
     for i in range(n_steps):
-        t_i_1 = (i + 1) * dT
+        # OU update
+        X[i + 1, :] = exp_eps * X[i, :] + dX[i, :]
+    # variance update
+    V[1:, :] = (
+        xi0(t_grid[1:, None]) * quintic_poly(X[1:, :]) ** 2 / mean_sq[1:][:, None]
+    )
 
-        # dX, dW = L @ np.random.normal(size=(2, n_mc))
-
-        # direct method - no Cholesky
-        normal = np.random.normal(size=(2, n_mc))
-        dX = std_X * normal[0, :]
-        dW = std_W * (rho_XW * normal[0, :] + np.sqrt(1 - rho_XW**2) * normal[1, :])
-
-        # update X with OU dynamics
-        X[i + 1, :] = exp_eps * X[i, :] + dX
-        # compute E[p(X)^2]
-        mean_squared = mean_px_squared(
-            a0=a0, a1=a1, a3=a3, a5=a5, sig=std_x_ou_quintic(params, t=t_i_1)
-        )
-        # update volatility V
-        V[i + 1, :] = xi0(t_i_1) * quintic_poly(X[i + 1, :]) ** 2 / mean_squared
-        # update log S with trapezoidal rule for integral in V
-        log_S[i + 1, :] = (
-            log_S[i, :]
-            - 0.5 * (V[i, :] + V[i + 1, :]) * 0.5 * dT
-            + np.sqrt(V[i, :])
-            * (rho * dW + rho_perp * np.sqrt(dT) * np.random.normal(size=n_mc))
-        )
-
-    S = np.exp(log_S)
+    # compute spot paths
+    int_V_dt = np.sum(V[:-1, :] * dT, axis=0)
+    int_sqrt_V_dW = np.sum(V[:-1, :] ** 0.5 * dW_S, axis=0)
+    S_T = np.exp(-0.5 * int_V_dt + int_sqrt_V_dW)
 
     if return_paths:
-        return X, V, S
+        return S_T
     else:
         # implied volatilities
-        return black_otm_impvol_mc(S=S[-1, :], k=k, T=T, mc_error=True)
+        return black_otm_impvol_mc(S=S_T, k=k, T=T, mc_error=True)
 
 
 def mc_polynomial_fwd_var(
@@ -327,6 +334,8 @@ def mc_polynomial_fwd_var(
     X = (1 / exp1) * (eta_tild * np.cumsum(std_vec * w1, axis=0))
     Xt = np.array(X[:-1])
     del X
+    print("X")
+    print(Xt)
 
     tt = tt[:-1]
     std_X_t = np.sqrt(
@@ -346,16 +355,16 @@ def mc_polynomial_fwd_var(
 
     f_func = horner_vector(a_k[::-1], len(a_k), Xt)
 
-    dW = np.sqrt(dt) * w1[1:, :]
-    dX = Xt[1:, :] - np.exp(-((0.5 - H) / eps) * dt) * Xt[:-1, :]
-    corr_per_step = []
-    for i in range(dX.shape[0]):
-        xi = dX[i, :]
-        wi = dW[i, :]
-        c = np.corrcoef(xi, wi)[0, 1]
-        corr_per_step.append(c)
+    # dW = np.sqrt(dt) * w1[1:, :]
+    # dX = Xt[1:, :] - np.exp(-((0.5 - H) / eps) * dt) * Xt[:-1, :]
+    # corr_per_step = []
+    # for i in range(dX.shape[0]):
+    #     xi = dX[i, :]
+    #     wi = dW[i, :]
+    #     c = np.corrcoef(xi, wi)[0, 1]
+    #     corr_per_step.append(c)
 
-    print(corr_per_step)
+    # print(corr_per_step)
 
     fv_var_curve_spline_sqrt = interpolate.splrep(
         T_array_nodes, np.sqrt(fv_nodes), k=spine_k_order
@@ -365,26 +374,27 @@ def mc_polynomial_fwd_var(
     ) ** 2
 
     volatility = f_func / np.sqrt(normal_var.reshape(-1, 1))
-    print(np.std(volatility, axis=1))
     del f_func
     volatility = np.sqrt(fv_curve) * volatility
+    print("volatility:")
+    print(volatility)
 
     logS1 = np.log(S0)
     for i in range(n_steps):
         logS1 = (
             logS1
-            - 0.5 * dt * volatility[i] ** 2
+            - 0.5 * dt * volatility[i, :n_mc] ** 2
             + np.sqrt(dt)
-            * volatility[i]
+            * volatility[i, :n_mc]
             * (
-                rho * w1[i + 1, :]
-                + np.sqrt(1 - rho**2) * np.random.normal(size=w1.shape[1])
+                rho * w1[i + 1, :n_mc]
+                + np.sqrt(1 - rho**2) * np.random.normal(size=n_mc)
             )
         )
     del w1
     ST1 = np.exp(logS1)
 
-    return black_otm_impvol_mc(S=ST1, k=np.log(Ks), T=T, mc_error=True)
+    return black_otm_impvol_mc(S=ST1, k=np.log(Ks / np.mean(ST1)), T=T, mc_error=True)
 
     logS1 = np.log(S0)
     for i in range(w1.shape[0] - 1):
