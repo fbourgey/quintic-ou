@@ -170,8 +170,6 @@ def mc_polynomial_fwd_var(
     X = (1 / exp1) * (eta_tild * np.cumsum(std_vec * w1, axis=0))
     Xt = np.array(X[:-1])
     del X
-    print("X")
-    print(Xt)
 
     tt = tt[:-1]
     std_X_t = np.sqrt(
@@ -212,8 +210,6 @@ def mc_polynomial_fwd_var(
     volatility = f_func / np.sqrt(normal_var.reshape(-1, 1))
     del f_func
     volatility = np.sqrt(fv_curve) * volatility
-    print("volatility:")
-    print(volatility)
 
     logS1 = np.log(S0)
     for i in range(n_steps):

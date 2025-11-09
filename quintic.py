@@ -88,7 +88,46 @@ def simulate_quintic_ou(
     params, xi0, T, k, n_steps, n_mc, seed=None, return_paths=False, antithetic=True
 ):
     """
-    Simulate paths of the quintic OU model.
+    Simulate paths of the quintic OU stochastic volatility model.
+
+    The model is defined by:
+    - dX_t = -kappa * X_t dt + eps^(H-0.5) dW_t^X, where kappa = (0.5-H)/eps
+    - V_t = xi0(t) * p(X_t)^2 / E[p(X_t)^2], with p(x) = a0 + a1*x + a3*x^3 + a5*x^5
+    - dS_t/S_t = sqrt(V_t) dW_t^S, where dW^X dW^S = rho dt
+
+    Parameters
+    ----------
+    params : dict
+        Model parameters with keys:
+        - 'rho' : float, correlation between X and S Brownian motions
+        - 'H' : float, Hurst-like parameter (0 < H < 0.5)
+        - 'eps' : float, mean-reversion timescale parameter
+        - 'a_vec' : array_like, polynomial coefficients [a0, a1, a3, a5]
+    xi0 : callable
+        Function xi0(t) defining the deterministic variance level.
+    T : float
+        Maturity time.
+    k : ndarray
+        Log-moneyness strikes for implied volatility computation.
+    n_steps : int
+        Number of time steps for discretization.
+    n_mc : int
+        Number of Monte Carlo paths.
+    seed : int, optional
+        Random seed for reproducibility.
+    return_paths : bool, optional
+        If True, return terminal spot prices. If False (default), return
+        implied volatilities.
+    antithetic : bool, optional
+        If True (default), use antithetic variates for variance reduction.
+
+    Returns
+    -------
+    ndarray or tuple
+        If return_paths=True: array of shape (n_mc,) with terminal spot
+        prices S_T.
+        If return_paths=False: tuple (iv, iv_stderr) with implied
+        volatilities and standard errors.
     """
     if seed is not None:
         np.random.seed(seed)
@@ -116,12 +155,10 @@ def simulate_quintic_ou(
     rho_XW = cov_XW / (std_X * std_W)
     exp_eps = np.exp(-((0.5 - H) / eps) * dT)
 
-    # antithetic normal generator (time x paths)
+    # antithetic normal generator
     def antithetic_normals(n_steps, n_mc):
-        base = (n_mc + 1) // 2
-        z = np.random.normal(size=(n_steps, base))
-        z_full = np.concatenate([z, -z], axis=1)[:, :n_mc]
-        return z_full
+        z = np.random.normal(size=(n_steps, n_mc))
+        return np.concatenate([z, -z], axis=1)
 
     if antithetic:
         # normal drives dX; normal_perp is independent piece to complete dW;
@@ -134,15 +171,15 @@ def simulate_quintic_ou(
 
     # state arrays
     X = np.zeros((n_steps + 1, n_mc))
-    V = np.zeros((n_steps + 1, n_mc))
-    V[0, :] = xi0(0.0)
+    sig = np.zeros((n_steps + 1, n_mc))  # volatility process
+    sig[0, :] = xi0(0.0) ** 0.5
     t_grid = np.linspace(0.0, T, n_steps + 1)
 
-    # normalization E[p(X_t)^2]
-    mean_sq = np.empty(n_steps + 1)
+    # normalization sqrt(E[p(X_t)^2])
+    norm_coef = np.empty(n_steps + 1)
     for i in range(n_steps + 1):
         sig_ti = std_x_ou_quintic(params, t=t_grid[i])  # = sqrt(Var[X_ti])
-        mean_sq[i] = mean_px_squared(a0=a0, a1=a1, a3=a3, a5=a5, sig=sig_ti)
+        norm_coef[i] = mean_px_squared(a0=a0, a1=a1, a3=a3, a5=a5, sig=sig_ti) ** 0.5
 
     # generate increments
     dX = std_X * normal
@@ -152,13 +189,13 @@ def simulate_quintic_ou(
         # OU update
         X[i + 1, :] = exp_eps * X[i, :] + dX[i, :]
     # variance update
-    V[1:, :] = (
-        xi0(t_grid[1:, None]) * quintic_poly(X[1:, :]) ** 2 / mean_sq[1:][:, None]
+    sig[1:, :] = (
+        xi0(t_grid[1:, None]) ** 0.5 * quintic_poly(X[1:, :]) / norm_coef[1:][:, None]
     )
 
     # compute spot paths
-    int_V_dt = np.sum(V[:-1, :] * dT, axis=0)
-    int_sqrt_V_dW = np.sum(V[:-1, :] ** 0.5 * dW_S, axis=0)
+    int_V_dt = np.sum(sig[:-1, :] ** 2 * dT, axis=0)
+    int_sqrt_V_dW = np.sum(sig[:-1, :] * dW_S, axis=0)
     S_T = np.exp(-0.5 * int_V_dt + int_sqrt_V_dW)
 
     if return_paths:
