@@ -16,23 +16,26 @@ def std_x_ou_quintic(params, t):
     return var**0.5
 
 
-def mean_px_squared(a0, a1, a3, a5, sig, n_quad=None):
+def mean_px_squared(a0, a1, a3, a5, mu, sig, n_quad=None):
     """
-    Compute E[p(X)^2] where p(x) = a0 + a1*x + a3*x^3 + a5*x^5 and X ~ N(0,sig^2).
+    Closed-form E[p(X)^2] for p(x)=a0+a1*x+a3*x**3+a5*x**5 and X~N(mu, sig^2).
+    Supports numpy broadcasting over mu/sig.
 
     Parameters
     ----------
     a0, a1, a3, a5 : float
-        Coefficients of the polynomial.
-    sig : float
-        Standard deviation of X.
+        Polynomial coefficients.
+    mu : float or ndarray, default 0.0
+        Mean of X.
+    sig : float or ndarray, default 1.0
+        Std dev of X.
     n_quad : int, optional
         Number of Gauss-Hermite quadrature points. If None, uses analytical formula.
 
     Returns
     -------
-    float
-        Expected value of p(X)^2.
+    float or ndarray
+        E[p(X)^2].
     """
     if n_quad is not None:
 
@@ -40,16 +43,40 @@ def mean_px_squared(a0, a1, a3, a5, sig, n_quad=None):
             return (a0 + a1 * x + a3 * x**3 + a5 * x**5) ** 2
 
         knots, weights = gauss_hermite(n_quad)
-        return np.sum(weights * quintic_poly(sig * knots))
+        return np.sum(weights * quintic_poly(mu + sig * knots))
 
-    return (
-        a0**2
-        + a1**2 * sig**2
-        + 6 * a1 * a3 * sig**4
-        + (15 * a3**2 + 30 * a1 * a5) * sig**6
-        + 210 * a3 * a5 * sig**8
-        + 945 * a5**2 * sig**10
+    mu = np.asarray(mu)
+    s2 = np.asarray(sig) ** 2
+    s4 = s2**2
+    s6 = s2**3
+    s8 = s2**4
+    s10 = s2**5
+
+    term0 = a0**2
+    term1 = 2 * a0 * a1 * mu
+    term2 = a1**2 * (mu**2 + s2)
+    term3 = 2 * a0 * a3 * (mu**3 + 3 * mu * s2)
+    term4 = 2 * a1 * a3 * (mu**4 + 6 * mu**2 * s2 + 3 * s4)
+    term5 = 2 * a0 * a5 * (mu**5 + 10 * mu**3 * s2 + 15 * mu * s4)
+    term6 = (a3**2 + 2 * a1 * a5) * (
+        mu**6 + 15 * mu**4 * s2 + 45 * mu**2 * s4 + 15 * s6
     )
+    term7 = (
+        2
+        * a3
+        * a5
+        * (mu**8 + 28 * mu**6 * s2 + 210 * mu**4 * s4 + 420 * mu**2 * s6 + 105 * s8)
+    )
+    term8 = a5**2 * (
+        mu**10
+        + 45 * mu**8 * s2
+        + 630 * mu**6 * s4
+        + 3150 * mu**4 * s6
+        + 4725 * mu**2 * s8
+        + 945 * s10
+    )
+
+    return term0 + term1 + term2 + term3 + term4 + term5 + term6 + term7 + term8
 
 
 def cov_delta_X_delta_W(delta, eps, H):
@@ -157,7 +184,7 @@ def simulate_quintic_ou(
 
     # antithetic normal generator
     def antithetic_normals(n_steps, n_mc):
-        z = np.random.normal(size=(n_steps, n_mc))
+        z = np.random.normal(size=(n_steps, n_mc // 2))
         return np.concatenate([z, -z], axis=1)
 
     if antithetic:
@@ -179,7 +206,9 @@ def simulate_quintic_ou(
     norm_coef = np.empty(n_steps + 1)
     for i in range(n_steps + 1):
         sig_ti = std_x_ou_quintic(params, t=t_grid[i])  # = sqrt(Var[X_ti])
-        norm_coef[i] = mean_px_squared(a0=a0, a1=a1, a3=a3, a5=a5, sig=sig_ti) ** 0.5
+        norm_coef[i] = (
+            mean_px_squared(a0=a0, a1=a1, a3=a3, a5=a5, mu=0.0, sig=sig_ti) ** 0.5
+        )
 
     # generate increments
     dX = std_X * normal
