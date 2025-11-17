@@ -1,6 +1,7 @@
 import numpy as np
-from utils import gauss_hermite
-from black import black_otm_impvol_mc
+from utils import gauss_hermite, gauss_legendre
+from black import black_impvol, black_otm_impvol_mc
+from scipy import stats
 
 
 def std_x_ou_quintic(params, t):
@@ -232,3 +233,93 @@ def simulate_quintic_ou(
     else:
         # implied volatilities
         return black_otm_impvol_mc(S=S_T, k=k, T=T, mc_error=True)
+
+
+def f_xi0(t, u, x, params):
+    """
+    Compute f^u(t, x) where xi_t(u) = xi_0(u) f^u(t, x)
+    """
+    H = params["H"]
+    eps = params["eps"]
+    a_vec = params["a_vec"]
+    a0, a1, a3, a5 = a_vec
+
+    num = mean_px_squared(
+        a0=a0,
+        a1=a1,
+        a3=a3,
+        a5=a5,
+        mu=x * np.exp(-((0.5 - H) / eps) * (u - t)),
+        sig=np.sqrt(
+            (eps ** (2 * H) / (1 - 2 * H))
+            * (1 - np.exp(-((1 - 2 * H) / eps) * (u - t)))
+        ),
+    )
+    denom = mean_px_squared(
+        a0=a0,
+        a1=a1,
+        a3=a3,
+        a5=a5,
+        mu=0.0,
+        sig=np.sqrt(
+            (eps ** (2 * H) / (1 - 2 * H)) * (1 - np.exp(-((1 - 2 * H) / eps) * u))
+        ),
+    )
+    return num / denom
+
+
+def fut_vix(params, xi0, T, n_quad=20, delta_vix=30 / 365):
+    return price_vix(
+        params=params,
+        xi0=xi0,
+        T=T,
+        K=0.0,
+        n_quad=n_quad,
+        opt=1,
+        delta_vix=delta_vix,
+    )
+
+
+def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
+    opt = np.atleast_1d(opt)
+    K = np.atleast_1d(K)
+
+    if opt.shape != K.shape:
+        raise ValueError("opt and K must have the same length")
+
+    x_leg, w_leg = gauss_legendre(0, 1, n_quad)
+    x_norm, w_norm = stats.norm.ppf(x_leg), w_leg
+
+    std_X_T = std_x_ou_quintic(params, T)
+
+    price = np.zeros_like(K)
+    for j in range(len(K)):
+        integrand = np.zeros(n_quad)
+        for i in range(n_quad):
+            f_val = f_xi0(
+                t=T, u=T + delta_vix * x_leg, x=x_norm[i] * std_X_T, params=params
+            )
+            vix = np.sqrt(np.sum(w_leg * xi0(T + delta_vix * x_leg) * f_val))
+            integrand[i] = np.maximum(opt[j] * (vix - K[j]), 0)
+
+        price[j] = np.sum(w_norm * integrand)
+
+    return price
+
+
+def impvol_vix(params, xi0, T, K, n_quad=20, delta_vix=30 / 365):
+    K = np.atleast_1d(K)
+    F = fut_vix(params=params, xi0=xi0, T=T, n_quad=n_quad, delta_vix=delta_vix)
+    otm_price = np.zeros_like(K)
+    opttype = 2 * (K > F) - 1  # 1 for call, -1 for put
+    otm_price = price_vix(
+        params=params,
+        xi0=xi0,
+        T=T,
+        K=K,
+        n_quad=n_quad,
+        opt=opttype,
+        delta_vix=delta_vix,
+    )
+    print(otm_price)
+    return black_impvol(value=otm_price, F=F, K=K, T=T, opttype=opttype)
