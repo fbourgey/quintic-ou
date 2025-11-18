@@ -6,10 +6,25 @@ from scipy import stats
 
 def std_x_ou_quintic(params, t):
     """
-    Compute standard deviation of X_t in the quintic OU model where
+    Compute standard deviation of X_t in the quintic OU model.
 
-    X_t = eps^(H-0.5) * int_0^t exp(-kappa * (t-s)) dW_s
-    and kappa = (0.5 - H)/eps.
+    The process is defined as:
+    X_t = eps^(H-0.5) * int_0^t exp(-kappa * (t-s)) dW_s,
+    where kappa = (0.5 - H)/eps.
+
+    Parameters
+    ----------
+    params : dict
+        Model parameters with keys:
+        - 'H' : float, Hurst parameter (0 < H < 0.5)
+        - 'eps' : float, mean-reversion timescale parameter
+    t : float or ndarray
+        Time point(s) at which to evaluate std dev.
+
+    Returns
+    -------
+    float or ndarray
+        Standard deviation of X_t.
     """
     H = params["H"]
     eps = params["eps"]
@@ -81,10 +96,10 @@ def mean_px_squared(a0, a1, a3, a5, mu, sig, n_quad=None):
 
 
 def cov_delta_X_delta_W(delta, eps, H):
-    r"""
+    """
     Compute the covariance matrix of (delta_X, delta_W) over time increment delta.
 
-    Here, delta_X = eps^{H-1/2} \int_{t}^{t+delta} e^{-((0.5-H)/eps)(t+delta - s)} dW_s
+    Here, delta_X = eps^{H-1/2} int_{t}^{t+delta} e^{-((0.5-H)/eps)(t+delta - s)} dW_s
     and delta_W = W_{t+delta} - W_t.
 
     Parameters
@@ -237,7 +252,27 @@ def simulate_quintic_ou(
 
 def f_xi0(t, u, x, params):
     """
-    Compute f^u(t, x) where xi_t(u) = xi_0(u) f^u(t, x)
+    Compute normalization factor f^u(t, x) for the variance process where
+    xi_t(u) = xi_0(u) f^u(t, x)
+
+    Parameters
+    ----------
+    t : float
+        Current time.
+    u : float or ndarray
+        Future time(s) at which to evaluate the factor.
+    x : float or ndarray
+        Current state value(s) of X_t.
+    params : dict
+        Model parameters with keys:
+        - 'H' : float, Hurst parameter
+        - 'eps' : float, mean-reversion timescale
+        - 'a_vec' : array_like, polynomial coefficients [a0, a1, a3, a5]
+
+    Returns
+    -------
+    float or ndarray
+        Normalization factor f^u(t, x). Supports numpy broadcasting.
     """
     H = params["H"]
     eps = params["eps"]
@@ -280,7 +315,60 @@ def fut_vix(params, xi0, T, n_quad=20, delta_vix=30 / 365):
     )
 
 
+# def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
+#     # TODO: optimize!
+#     opt = np.atleast_1d(opt)
+#     K = np.atleast_1d(K)
+
+#     if opt.shape != K.shape:
+#         raise ValueError("opt and K must have the same length")
+
+#     x_leg, w_leg = gauss_legendre(0, 1, n_quad)
+#     x_norm, w_norm = stats.norm.ppf(x_leg), w_leg
+
+#     std_X_T = std_x_ou_quintic(params, T)
+
+#     price = np.zeros_like(K)
+#     for j in range(len(K)):
+#         integrand = np.zeros(n_quad)
+#         for i in range(n_quad):
+#             f_val = f_xi0(
+#                 t=T, u=T + delta_vix * x_leg, x=x_norm[i] * std_X_T, params=params
+#             )
+#             vix = np.sqrt(np.sum(w_leg * xi0(T + delta_vix * x_leg) * f_val))
+#             integrand[i] = np.maximum(opt[j] * (vix - K[j]), 0)
+
+#         price[j] = np.sum(w_norm * integrand)
+
+#     return price
+
+
 def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
+    """
+    Compute VIX option prices using Gauss-Legendre quadrature (vectorized).
+
+    Parameters
+    ----------
+    params : dict
+        Model parameters.
+    xi0 : callable
+        Deterministic variance function.
+    T : float
+        Time to maturity.
+    K : float or ndarray
+        Strike price(s).
+    n_quad : int, optional
+        Number of quadrature points (default 20).
+    opt : int or ndarray, optional
+        Option type: 1 for call, -1 for put (default 1).
+    delta_vix : float, optional
+        VIX integration period (default 30/365).
+
+    Returns
+    -------
+    ndarray
+        VIX option price(s).
+    """
     opt = np.atleast_1d(opt)
     K = np.atleast_1d(K)
 
@@ -291,23 +379,44 @@ def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
     x_norm, w_norm = stats.norm.ppf(x_leg), w_leg
 
     std_X_T = std_x_ou_quintic(params, T)
-
-    price = np.zeros_like(K)
-    for j in range(len(K)):
-        integrand = np.zeros(n_quad)
-        for i in range(n_quad):
-            f_val = f_xi0(
-                t=T, u=T + delta_vix * x_leg, x=x_norm[i] * std_X_T, params=params
-            )
-            vix = np.sqrt(np.sum(w_leg * xi0(T + delta_vix * x_leg) * f_val))
-            integrand[i] = np.maximum(opt[j] * (vix - K[j]), 0)
-
-        price[j] = np.sum(w_norm * integrand)
-
+    f_val = f_xi0(
+        t=T,
+        u=T + delta_vix * x_leg[None, :],
+        x=x_norm[:, None] * std_X_T,
+        params=params,
+    )
+    vix = np.sqrt(
+        np.sum(w_leg[None, :] * xi0(T + delta_vix * x_leg[None, :]) * f_val, axis=1)
+    )
+    payoff = np.maximum(opt[None, :] * (vix[:, None] - K[None, :]), 0)
+    price = np.sum(w_norm[:, None] * payoff, axis=0)
     return price
 
 
 def impvol_vix(params, xi0, T, K, n_quad=20, delta_vix=30 / 365):
+    """
+    Compute VIX option implied volatilities.
+
+    Parameters
+    ----------
+    params : dict
+        Model parameters.
+    xi0 : callable
+        Deterministic variance function.
+    T : float
+        Time to maturity.
+    K : float or ndarray
+        Strike price(s).
+    n_quad : int, optional
+        Number of quadrature points (default 20).
+    delta_vix : float, optional
+        VIX forward period (default 30/365).
+
+    Returns
+    -------
+    ndarray
+        Implied volatility of VIX option(s).
+    """
     K = np.atleast_1d(K)
     F = fut_vix(params=params, xi0=xi0, T=T, n_quad=n_quad, delta_vix=delta_vix)
     otm_price = np.zeros_like(K)
@@ -321,5 +430,4 @@ def impvol_vix(params, xi0, T, K, n_quad=20, delta_vix=30 / 365):
         opt=opttype,
         delta_vix=delta_vix,
     )
-    print(otm_price)
     return black_impvol(value=otm_price, F=F, K=K, T=T, opttype=opttype)
