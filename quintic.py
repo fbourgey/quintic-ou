@@ -315,34 +315,6 @@ def fut_vix(params, xi0, T, n_quad=20, delta_vix=30 / 365):
     )
 
 
-# def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
-#     # TODO: optimize!
-#     opt = np.atleast_1d(opt)
-#     K = np.atleast_1d(K)
-
-#     if opt.shape != K.shape:
-#         raise ValueError("opt and K must have the same length")
-
-#     x_leg, w_leg = gauss_legendre(0, 1, n_quad)
-#     x_norm, w_norm = stats.norm.ppf(x_leg), w_leg
-
-#     std_X_T = std_x_ou_quintic(params, T)
-
-#     price = np.zeros_like(K)
-#     for j in range(len(K)):
-#         integrand = np.zeros(n_quad)
-#         for i in range(n_quad):
-#             f_val = f_xi0(
-#                 t=T, u=T + delta_vix * x_leg, x=x_norm[i] * std_X_T, params=params
-#             )
-#             vix = np.sqrt(np.sum(w_leg * xi0(T + delta_vix * x_leg) * f_val))
-#             integrand[i] = np.maximum(opt[j] * (vix - K[j]), 0)
-
-#         price[j] = np.sum(w_norm * integrand)
-
-#     return price
-
-
 def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
     """
     Compute VIX option prices using Gauss-Legendre quadrature (vectorized).
