@@ -393,20 +393,20 @@ def price_vix(params, xi0, T, K, n_quad=20, opt=1, delta_vix=30 / 365):
     return price
 
 
-def impvol_vix(params, xi0, T, K, n_quad=20, delta_vix=30 / 365):
+def impvol_vix(T, k, params, xi0, n_quad=20, delta_vix=30 / 365):
     """
     Compute VIX option implied volatilities.
 
     Parameters
     ----------
+    T : float
+        Time to maturity.
+    k : float or ndarray
+        Log moneyness.
     params : dict
         Model parameters.
     xi0 : callable
         Deterministic variance function.
-    T : float
-        Time to maturity.
-    K : float or ndarray
-        Strike price(s).
     n_quad : int, optional
         Number of quadrature points (default 20).
     delta_vix : float, optional
@@ -417,10 +417,11 @@ def impvol_vix(params, xi0, T, K, n_quad=20, delta_vix=30 / 365):
     ndarray
         Implied volatility of VIX option(s).
     """
-    K = np.atleast_1d(K)
+    k = np.atleast_1d(k)
     F = fut_vix(params=params, xi0=xi0, T=T, n_quad=n_quad, delta_vix=delta_vix)
-    otm_price = np.zeros_like(K)
+    K = F * np.exp(k)
     opttype = 2 * (K > F) - 1  # 1 for call, -1 for put
+    otm_price = np.zeros_like(K)
     otm_price = price_vix(
         params=params,
         xi0=xi0,
